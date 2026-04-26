@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>דגי־פרצופים: תופסים אוכל</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at top, #0f5f96, #06243c 62%);
+      color: #f6fbff;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+    .app { width: min(980px, 96vw); display: grid; gap: 12px; }
+    .panel {
+      background: rgba(7, 24, 38, 0.76);
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 14px;
+      padding: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .controls label { font-size: 13px; }
+    input[type="file"] { max-width: 180px; }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 8px 12px;
+      color: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    #newGameBtn { background: #2990e8; }
+    #throwBtn { background: #ea8a24; }
+    canvas {
+      width: 100%;
+      height: auto;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.2);
+      box-shadow: 0 12px 34px rgba(0,0,0,.45);
+      background: linear-gradient(#198ad9 0%, #0e4f85 60%, #07355b 100%);
+      touch-action: none;
+    }
+    .hint { font-size: 13px; opacity: .9; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="panel">
+      <div class="controls">
+        <label>פרצוף דג שמאל <input id="face1" type="file" accept="image/*"></label>
+        <label>פרצוף דג ימין <input id="face2" type="file" accept="image/*"></label>
+        <button id="newGameBtn">משחק חדש</button>
+        <button id="throwBtn">זרוק אוכל</button>
+      </div>
+      <div><strong>ניקוד:</strong> <span id="score">0 : 0</span> | <strong>זמן:</strong> <span id="time">75</span></div>
+    </section>
+
+    <canvas id="game" width="960" height="540" aria-label="משחק דגים"></canvas>
+
+    <section class="panel hint">
+      שליטה: שמאל <strong>A/D</strong>, ימין <strong>←/→</strong>. אפשר גם לגרור עם העכבר/מגע (כל חצי מסך שולט על הדג שלו).<br>
+      לזריקת אוכל: לחיצה על הכפתור "זרוק אוכל", או <strong>רווח</strong>, או קליק על המים.
+    </section>
+  </main>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const timeEl = document.getElementById('time');
+    const newGameBtn = document.getElementById('newGameBtn');
+    const throwBtn = document.getElementById('throwBtn');
+    const faceInputs = [document.getElementById('face1'), document.getElementById('face2')];
+
+    const keys = new Set();
+    const pointerTargets = [null, null];
+
+    const fishes = [
+      { x: 220, y: 260, dir: 1, w: 186, h: 120, color: '#ff8b1e', stripe: '#ffffff', speed: 6, img: null, score: 0 },
+      { x: 740, y: 300, dir: -1, w: 186, h: 120, color: '#2f74ff', stripe: '#ffd84f', speed: 6, img: null, score: 0 }
+    ];
+
+    let pellets = [];
+    let bubbles = [];
+    let gameSeconds = 75;
+    let secondAccumulator = 0;
+    let running = true;
+
+    function loadFace(file, fishIndex) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => { fishes[fishIndex].img = img; };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    faceInputs.forEach((input, i) => {
+      input.addEventListener('change', e => loadFace(e.target.files[0], i));
+    });
+
+    function throwFood(x = Math.random() * (canvas.width - 60) + 30) {
+      for (let i = 0; i < 3; i += 1) {
+        pellets.push({
+          x: x + (Math.random() - 0.5) * 28,
+          y: -8 - i * 3,
+          vy: 1.8 + Math.random() * 1.7,
+          size: 5 + Math.random() * 5
+        });
+      }
+    }
+
+    function spawnBubble() {
+      bubbles.push({
+        x: Math.random() * canvas.width,
+        y: canvas.height + 20,
+        r: 2 + Math.random() * 5,
+        vy: 0.6 + Math.random() * 1.4,
+        alpha: 0.2 + Math.random() * 0.4
+      });
+    }
+
+    function drawFish(fish) {
+      ctx.save();
+      ctx.translate(fish.x, fish.y);
+      ctx.scale(fish.dir, 1);
+
+      ctx.fillStyle = fish.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, fish.w * 0.42, fish.h * 0.46, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(-fish.w * 0.4, 0);
+      ctx.lineTo(-fish.w * 0.64, -fish.h * 0.26);
+      ctx.lineTo(-fish.w * 0.64, fish.h * 0.26);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = fish.stripe;
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.arc(-fish.w * 0.05, 0, fish.h * 0.42, -1.2, 1.2);
+      ctx.stroke();
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(fish.w * 0.12, 0, fish.h * 0.28, 0, Math.PI * 2);
+      ctx.clip();
+      if (fish.img) {
+        ctx.drawImage(fish.img, fish.w * 0.12 - fish.h * 0.33, -fish.h * 0.33, fish.h * 0.66, fish.h * 0.66);
+      } else {
+        ctx.fillStyle = '#f3d6b2';
+        ctx.fillRect(fish.w * 0.12 - fish.h * 0.33, -fish.h * 0.33, fish.h * 0.66, fish.h * 0.66);
+        ctx.fillStyle = '#1d1d1d';
+        ctx.font = '26px sans-serif';
+        ctx.fillText('🙂', fish.w * 0.12 - 12, 8);
+      }
+      ctx.restore();
+
+      ctx.restore();
+    }
+
+    function update() {
+      if (!running) return;
+
+      if (keys.has('KeyA')) fishes[0].x -= fishes[0].speed;
+      if (keys.has('KeyD')) fishes[0].x += fishes[0].speed;
+      if (keys.has('ArrowLeft')) fishes[1].x -= fishes[1].speed;
+      if (keys.has('ArrowRight')) fishes[1].x += fishes[1].speed;
+
+      pointerTargets.forEach((target, i) => {
+        if (target === null) return;
+        const delta = target - fishes[i].x;
+        fishes[i].x += Math.sign(delta) * Math.min(Math.abs(delta), fishes[i].speed * 1.15);
+      });
+
+      fishes.forEach((fish, i) => {
+        fish.x = Math.max(80, Math.min(canvas.width - 80, fish.x));
+        fish.dir = i === 0 ? 1 : -1;
+      });
+
+      if (Math.random() < 0.28) spawnBubble();
+      bubbles.forEach(b => b.y -= b.vy);
+      bubbles = bubbles.filter(b => b.y > -20);
+
+      pellets.forEach(p => p.y += p.vy);
+      pellets = pellets.filter(p => {
+        let caught = false;
+        fishes.forEach(f => {
+          const mouthX = f.x + f.dir * 38;
+          const mouthY = f.y;
+          if (Math.hypot(p.x - mouthX, p.y - mouthY) < p.size + 27) {
+            f.score += 1;
+            caught = true;
+          }
+        });
+        return !caught && p.y < canvas.height + 20;
+      });
+
+      secondAccumulator += 1 / 60;
+      if (secondAccumulator >= 1) {
+        gameSeconds -= 1;
+        secondAccumulator = 0;
+        if (gameSeconds <= 0) running = false;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      for (let i = 0; i < 18; i++) {
+        ctx.fillRect(0, i * 30 + ((Date.now() / 42) % 30), canvas.width, 1);
+      }
+
+      bubbles.forEach(b => {
+        ctx.strokeStyle = `rgba(255,255,255,${b.alpha})`;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+      pellets.forEach(p => {
+        ctx.fillStyle = '#f7c96f';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      fishes.forEach(drawFish);
+
+      if (!running) {
+        ctx.fillStyle = 'rgba(0,0,0,.54)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const winner = fishes[0].score === fishes[1].score
+          ? 'תיקו 🫧'
+          : fishes[0].score > fishes[1].score ? 'דג שמאל ניצח 🐠' : 'דג ימין ניצח 🐟';
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 44px sans-serif';
+        ctx.fillText(winner, canvas.width / 2 - 180, canvas.height / 2 - 8);
+        ctx.font = '22px sans-serif';
+        ctx.fillText('לחצו על "משחק חדש" כדי להתחיל שוב', canvas.width / 2 - 190, canvas.height / 2 + 32);
+      }
+
+      scoreEl.textContent = `${fishes[0].score} : ${fishes[1].score}`;
+      timeEl.textContent = String(Math.max(0, gameSeconds));
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    function resetGame() {
+      pellets = [];
+      bubbles = [];
+      gameSeconds = 75;
+      secondAccumulator = 0;
+      running = true;
+      fishes[0].x = 220;
+      fishes[1].x = 740;
+      fishes.forEach(f => { f.score = 0; });
+    }
+
+    function relativeX(event) {
+      const rect = canvas.getBoundingClientRect();
+      return ((event.clientX - rect.left) / rect.width) * canvas.width;
+    }
+
+    canvas.addEventListener('pointerdown', e => {
+      const x = relativeX(e);
+      throwFood(x);
+      if (x < canvas.width / 2) pointerTargets[0] = x;
+      else pointerTargets[1] = x;
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (!(e.buttons & 1)) return;
+      const x = relativeX(e);
+      if (x < canvas.width / 2) pointerTargets[0] = x;
+      else pointerTargets[1] = x;
+    });
+    canvas.addEventListener('pointerup', () => {
+      pointerTargets[0] = null;
+      pointerTargets[1] = null;
+    });
+
+    window.addEventListener('keydown', e => {
+      keys.add(e.code);
+      if (e.code === 'Space') {
+        e.preventDefault();
+        throwFood();
+      }
+    });
+    window.addEventListener('keyup', e => keys.delete(e.code));
+
+    throwBtn.addEventListener('click', () => throwFood());
+    newGameBtn.addEventListener('click', resetGame);
+
+    loop();
+  </script>
+</body>
+</html>
